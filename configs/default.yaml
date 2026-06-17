@@ -4,7 +4,7 @@ model:
   pretrained: true
   dropout: 0.3
   ensemble:
-    enabled: true
+    enabled: false
     models:
       - name: "efficientnet_b4"
         weight: 0.35
@@ -16,8 +16,8 @@ model:
         weight: 0.15
 
 training:
-  epochs: 50
-  batch_size: 32
+  epochs: 5
+  batch_size: 8
   learning_rate: 0.0001
   weight_decay: 0.00001
   scheduler: "cosine_annealing"
@@ -29,7 +29,7 @@ training:
 
 data:
   image_size: 380
-  num_workers: 8
+  num_workers: 2
   train_split: 0.7
   val_split: 0.15
   test_split: 0.15
