@@ -1,0 +1,77 @@
+model:
+  backbone: "efficientnet_b4"
+  num_classes: 2
+  pretrained: true
+  dropout: 0.3
+  ensemble:
+    enabled: true
+    models:
+      - name: "efficientnet_b4"
+        weight: 0.35
+      - name: "xception"
+        weight: 0.30
+      - name: "capsule_net"
+        weight: 0.20
+      - name: "frequency_net"
+        weight: 0.15
+
+training:
+  epochs: 50
+  batch_size: 32
+  learning_rate: 0.0001
+  weight_decay: 0.00001
+  scheduler: "cosine_annealing"
+  warmup_epochs: 5
+  early_stopping_patience: 10
+  mixed_precision: true
+  gradient_clip: 1.0
+  label_smoothing: 0.1
+
+data:
+  image_size: 380
+  num_workers: 8
+  train_split: 0.7
+  val_split: 0.15
+  test_split: 0.15
+  augmentation:
+    horizontal_flip: true
+    random_crop: true
+    color_jitter: true
+    gaussian_blur: true
+    compression_artifact: true
+
+analysis:
+  frequency:
+    dct_block_size: 8
+    fft_enabled: true
+    wavelet: "db4"
+    wavelet_levels: 4
+  facial_landmarks:
+    enabled: true
+    detector: "mediapipe"
+    num_landmarks: 468
+  temporal:
+    enabled: true
+    window_size: 16
+    stride: 4
+    optical_flow: true
+
+visualization:
+  heatmap_resolution: 224
+  grad_cam_layer: "features.7"
+  confidence_threshold: 0.5
+  report_format: "html"
+
+datasets:
+  faceforensics:
+    url: "https://github.com/ondyari/FaceForensics"
+    description: "FaceForensics++ with 1000 original and manipulated videos"
+  celeb_df:
+    url: "https://github.com/yuezunli/celeb-deepfakeforensics"
+    description: "CelebDF v2 with 590 real and 5639 deepfake videos"
+  dfdc:
+    url: "https://www.kaggle.com/c/deepfake-detection-challenge"
+    description: "Facebook DFDC with 100k+ clips"
+  wild_deepfake:
+    url: "https://github.com/deepfakeinthewild/deepfake-in-the-wild"
+    description: "Real-world deepfakes collected from the internet"
