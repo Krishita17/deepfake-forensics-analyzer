@@ -1,50 +1,73 @@
 import numpy as np
 import cv2
-from scipy.spatial import ConvexHull
 from scipy.stats import entropy
 
 
 class FacialForensicsAnalyzer:
-    def __init__(self, landmark_detector="mediapipe"):
+    def __init__(self, landmark_detector="opencv"):
         self.detector_type = landmark_detector
-        self._detector = None
-        self._face_mesh = None
+        self._face_cascade = None
+        self._landmark_model = None
 
-    def _init_mediapipe(self):
-        if self._face_mesh is None:
-            import mediapipe as mp
-            self._face_mesh = mp.solutions.face_mesh.FaceMesh(
-                static_image_mode=True,
-                max_num_faces=1,
-                refine_landmarks=True,
-                min_detection_confidence=0.5,
+    def _init_detector(self):
+        if self._face_cascade is None:
+            self._face_cascade = cv2.CascadeClassifier(
+                cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
             )
+        if self._landmark_model is None:
+            self._landmark_model = cv2.face.createFacemarkLBF() if hasattr(cv2, "face") else None
 
-    def detect_landmarks(self, image):
-        self._init_mediapipe()
-        rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        results = self._face_mesh.process(rgb)
+    def detect_face_region(self, image):
+        self._init_detector()
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if len(image.shape) == 3 else image
+        faces = self._face_cascade.detectMultiScale(gray, 1.1, 5, minSize=(60, 60))
 
-        if not results.multi_face_landmarks:
+        if len(faces) == 0:
             return None
 
-        landmarks = results.multi_face_landmarks[0]
-        h, w = image.shape[:2]
-        points = np.array([
-            [lm.x * w, lm.y * h, lm.z * w]
-            for lm in landmarks.landmark
-        ])
-        return points
+        x, y, w, h = max(faces, key=lambda f: f[2] * f[3])
+        return {"box": (x, y, w, h), "center": (x + w // 2, y + h // 2)}
+
+    def _generate_pseudo_landmarks(self, image, face_box):
+        x, y, w, h = face_box
+        landmarks = np.zeros((68, 3), dtype=np.float64)
+
+        landmarks[0] = [x, y + h * 0.45, 0]
+        landmarks[16] = [x + w, y + h * 0.45, 0]
+        for i in range(1, 16):
+            t = i / 16.0
+            lx = x + t * w
+            ly = y + h * (0.45 + 0.55 * np.sin(t * np.pi) * 0.3)
+            landmarks[i] = [lx, ly, 0]
+
+        landmarks[36] = [x + w * 0.25, y + h * 0.35, 0]
+        landmarks[39] = [x + w * 0.40, y + h * 0.35, 0]
+        landmarks[42] = [x + w * 0.60, y + h * 0.35, 0]
+        landmarks[45] = [x + w * 0.75, y + h * 0.35, 0]
+
+        landmarks[30] = [x + w * 0.50, y + h * 0.55, 0]
+        landmarks[33] = [x + w * 0.50, y + h * 0.60, 0]
+
+        landmarks[48] = [x + w * 0.32, y + h * 0.72, 0]
+        landmarks[54] = [x + w * 0.68, y + h * 0.72, 0]
+        landmarks[51] = [x + w * 0.50, y + h * 0.70, 0]
+        landmarks[57] = [x + w * 0.50, y + h * 0.78, 0]
+
+        landmarks[27] = [x + w * 0.50, y + h * 0.20, 0]
+
+        return landmarks
 
     def compute_landmark_consistency(self, landmarks):
         if landmarks is None:
-            return {"score": 0.0, "details": "no_face_detected"}
+            return {"score": 0.0, "details": "no_face_detected",
+                    "symmetry_score": 0.0, "proportion_deviation": 0.0,
+                    "jaw_smoothness": 0.0, "eye_distance": 0.0, "consistency_score": 0.0}
 
-        left_eye = landmarks[33]
-        right_eye = landmarks[263]
-        nose_tip = landmarks[1]
-        left_mouth = landmarks[61]
-        right_mouth = landmarks[291]
+        left_eye = landmarks[36]
+        right_eye = landmarks[45]
+        nose_tip = landmarks[30]
+        left_mouth = landmarks[48]
+        right_mouth = landmarks[54]
 
         eye_dist = np.linalg.norm(left_eye[:2] - right_eye[:2])
         left_nose = np.linalg.norm(left_eye[:2] - nose_tip[:2])
@@ -56,7 +79,7 @@ class FacialForensicsAnalyzer:
         expected_proportion = 0.65
         proportion_deviation = abs(proportion_score - expected_proportion)
 
-        jaw_points = landmarks[152:172] if len(landmarks) > 172 else landmarks[-20:]
+        jaw_points = landmarks[0:17]
         if len(jaw_points) >= 3:
             diffs = np.diff(jaw_points[:, :2], axis=0)
             angles = np.arctan2(diffs[:, 1], diffs[:, 0])
@@ -77,18 +100,16 @@ class FacialForensicsAnalyzer:
             )),
         }
 
-    def analyze_skin_texture(self, image, landmarks):
-        if landmarks is None:
-            return {"score": 0.0}
+    def analyze_skin_texture(self, image, face_box):
+        if face_box is None:
+            return {"score": 0.0, "texture_variance": 0.0,
+                    "gabor_uniformity": 0.0, "color_consistency": 0.0, "texture_score": 0.0}
 
         h, w = image.shape[:2]
+        x, y, bw, bh = face_box
         mask = np.zeros((h, w), dtype=np.uint8)
-        face_oval_indices = [10, 338, 297, 332, 284, 251, 389, 356, 454,
-                             323, 361, 288, 397, 365, 379, 378, 400, 377,
-                             152, 148, 176, 149, 150, 136, 172, 58, 132,
-                             93, 234, 127, 162, 21, 54, 103, 67, 109]
-        pts = landmarks[face_oval_indices, :2].astype(np.int32)
-        cv2.fillConvexPoly(mask, pts, 255)
+        cx, cy = x + bw // 2, y + bh // 2
+        cv2.ellipse(mask, (cx, cy), (bw // 2, bh // 2), 0, 0, 360, 255, -1)
 
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         face_region = cv2.bitwise_and(gray, gray, mask=mask)
@@ -104,14 +125,14 @@ class FacialForensicsAnalyzer:
 
         gabor_uniformity = 1.0 - (np.std(gabor_responses) / (np.mean(gabor_responses) + 1e-10))
 
-        left_cheek = landmarks[234, :2].astype(int)
-        right_cheek = landmarks[454, :2].astype(int)
-        forehead = landmarks[10, :2].astype(int)
+        left_cheek = (x + bw // 4, y + bh // 2)
+        right_cheek = (x + 3 * bw // 4, y + bh // 2)
+        forehead = (x + bw // 2, y + bh // 4)
 
         def get_patch_stats(center, size=30):
-            y, x = int(center[1]), int(center[0])
-            y1, y2 = max(0, y - size), min(h, y + size)
-            x1, x2 = max(0, x - size), min(w, x + size)
+            px, py = int(center[0]), int(center[1])
+            y1, y2 = max(0, py - size), min(h, py + size)
+            x1, x2 = max(0, px - size), min(w, px + size)
             patch = gray[y1:y2, x1:x2]
             if patch.size == 0:
                 return 0, 0
@@ -133,19 +154,17 @@ class FacialForensicsAnalyzer:
             )),
         }
 
-    def detect_blending_artifacts(self, image, landmarks):
-        if landmarks is None:
-            return {"score": 0.0}
+    def detect_blending_artifacts(self, image, face_box):
+        if face_box is None:
+            return {"score": 0.0, "edge_density_at_boundary": 0.0,
+                    "color_discontinuity": 0.0, "blending_score": 0.0}
 
         h, w = image.shape[:2]
-        face_oval_indices = [10, 338, 297, 332, 284, 251, 389, 356, 454,
-                             323, 361, 288, 397, 365, 379, 378, 400, 377,
-                             152, 148, 176, 149, 150, 136, 172, 58, 132,
-                             93, 234, 127, 162, 21, 54, 103, 67, 109]
-        pts = landmarks[face_oval_indices, :2].astype(np.int32)
+        x, y, bw, bh = face_box
+        cx, cy = x + bw // 2, y + bh // 2
 
         mask = np.zeros((h, w), dtype=np.uint8)
-        cv2.fillConvexPoly(mask, pts, 255)
+        cv2.ellipse(mask, (cx, cy), (bw // 2, bh // 2), 0, 0, 360, 255, -1)
         boundary = cv2.dilate(mask, np.ones((5, 5)), iterations=3) - cv2.erode(mask, np.ones((5, 5)), iterations=3)
 
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
@@ -173,10 +192,17 @@ class FacialForensicsAnalyzer:
         }
 
     def analyze(self, image):
-        landmarks = self.detect_landmarks(image)
+        face_info = self.detect_face_region(image)
+        face_box = face_info["box"] if face_info else None
+
+        if face_box is not None:
+            landmarks = self._generate_pseudo_landmarks(image, face_box)
+        else:
+            landmarks = None
+
         consistency = self.compute_landmark_consistency(landmarks)
-        texture = self.analyze_skin_texture(image, landmarks)
-        blending = self.detect_blending_artifacts(image, landmarks)
+        texture = self.analyze_skin_texture(image, face_box)
+        blending = self.detect_blending_artifacts(image, face_box)
 
         if landmarks is None:
             return {
