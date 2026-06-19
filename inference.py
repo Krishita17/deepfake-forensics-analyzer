@@ -5,9 +5,9 @@ import numpy as np
 import yaml
 from pathlib import Path
 
-from src.models import EnsembleDetector, EfficientNetDetector
+from src.models import EfficientNetDetector
 from src.preprocessing import FaceExtractor, get_validation_transforms
-from src.analysis import FrequencyAnalyzer, FacialForensicsAnalyzer, TemporalConsistencyAnalyzer, GradCAMExplainer
+from src.analysis import FrequencyAnalyzer, FacialForensicsAnalyzer, TemporalConsistencyAnalyzer, GANArtifactDetector
 from src.visualization import ForensicsPlotter, ReportGenerator
 
 
@@ -25,6 +25,7 @@ class DeepfakeDetector:
             wavelet_levels=self.config["analysis"]["frequency"]["wavelet_levels"],
         )
         self.facial_analyzer = FacialForensicsAnalyzer()
+        self.gan_detector = GANArtifactDetector()
         self.temporal_analyzer = TemporalConsistencyAnalyzer(
             window_size=self.config["analysis"]["temporal"]["window_size"],
             stride=self.config["analysis"]["temporal"]["stride"],
@@ -35,13 +36,10 @@ class DeepfakeDetector:
         self.model = self._load_model(weights_path)
 
     def _load_model(self, weights_path):
-        if self.config["model"]["ensemble"]["enabled"]:
-            model = EnsembleDetector(self.config)
-        else:
-            model = EfficientNetDetector(
-                model_name=self.config["model"]["backbone"],
-                num_classes=self.config["model"]["num_classes"],
-            )
+        model = EfficientNetDetector(
+            model_name=self.config["model"]["backbone"],
+            num_classes=self.config["model"]["num_classes"],
+        )
 
         weights_file = Path(weights_path)
         if weights_file.exists():
@@ -79,21 +77,25 @@ class DeepfakeDetector:
 
         freq_result = self.freq_analyzer.analyze(face_image)
         facial_result = self.facial_analyzer.analyze(face_image)
+        gan_result = self.gan_detector.analyze(face_image)
 
         neural_score = model_output["probabilities"][0, 1].item()
         freq_score = freq_result["frequency_forgery_score"]
         facial_score = facial_result["facial_forgery_score"]
+        gan_score = gan_result["gan_artifact_score"]
 
         overall_score = (
-            0.45 * neural_score
-            + 0.30 * freq_score
-            + 0.25 * facial_score
+            0.55 * neural_score
+            + 0.15 * freq_score
+            + 0.05 * facial_score
+            + 0.25 * gan_score
         )
 
         scores = {
             "neural_score": neural_score,
             "frequency_score": freq_score,
             "facial_score": facial_score,
+            "gan_artifact_score": gan_score,
             "overall_score": overall_score,
         }
 
@@ -104,6 +106,7 @@ class DeepfakeDetector:
             "model_output": model_output,
             "frequency_analysis": freq_result,
             "facial_analysis": facial_result,
+            "gan_analysis": gan_result,
             "details": {
                 "faces_detected": len(faces),
                 "face_confidence": faces[0]["confidence"] if faces else 0,
@@ -111,11 +114,15 @@ class DeepfakeDetector:
                 "dct_high_freq_ratio": freq_result["dct"]["high_freq_ratio"],
                 "landmark_consistency": facial_result["consistency"].get("consistency_score", 0),
                 "blending_artifacts": facial_result["blending"].get("blending_score", 0),
+                "spectral_peaks": gan_result["spectral"]["spectral_peak_count"],
+                "noise_uniformity": gan_result["noise"]["noise_uniformity"],
+                "color_kurtosis_uniformity": gan_result["color"]["kurtosis_uniformity"],
+                "checkerboard_energy": gan_result["checkerboard"]["checkerboard_energy"],
             },
         }
 
         print(f"\n  Verdict: {result['verdict']} ({overall_score:.1%} forgery probability)")
-        print(f"  Neural: {neural_score:.3f} | Frequency: {freq_score:.3f} | Facial: {facial_score:.3f}")
+        print(f"  Neural: {neural_score:.3f} | Frequency: {freq_score:.3f} | Facial: {facial_score:.3f} | GAN: {gan_score:.3f}")
 
         if generate_report:
             fig_paths = []
@@ -137,6 +144,7 @@ class DeepfakeDetector:
         temporal_result = self.temporal_analyzer.analyze_video(str(video_path))
 
         frame_scores = []
+        gan_scores = []
         for face_data in faces:
             face_img = face_data["face"]
             rgb = cv2.cvtColor(face_img, cv2.COLOR_BGR2RGB) if face_img.shape[2] == 3 else face_img
@@ -147,8 +155,13 @@ class DeepfakeDetector:
                 output = self.model(input_tensor)
             frame_scores.append(output["probabilities"][0, 1].item())
 
+            gan_result = self.gan_detector.analyze(face_img)
+            gan_scores.append(gan_result["gan_artifact_score"])
+
         neural_score = np.mean(frame_scores) if frame_scores else 0.5
+        gan_score = np.mean(gan_scores) if gan_scores else 0.5
         temporal_score = temporal_result["temporal_forgery_score"]
+
         freq_scores = []
         for face_data in faces[:10]:
             freq_result = self.freq_analyzer.analyze(face_data["face"])
@@ -156,15 +169,17 @@ class DeepfakeDetector:
         freq_score = np.mean(freq_scores) if freq_scores else 0.5
 
         overall_score = (
-            0.40 * neural_score
-            + 0.25 * freq_score
-            + 0.35 * temporal_score
+            0.25 * neural_score
+            + 0.20 * freq_score
+            + 0.25 * temporal_score
+            + 0.30 * gan_score
         )
 
         scores = {
             "neural_score": neural_score,
             "frequency_score": freq_score,
             "temporal_score": temporal_score,
+            "gan_artifact_score": gan_score,
             "overall_score": overall_score,
         }
 
